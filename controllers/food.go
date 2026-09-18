@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"restaurant-management-system/database"
 	"restaurant-management-system/models"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,21 +23,107 @@ var foodCollection *mongo.Collection = database.OpenCollection(database.Client, 
 // var menuCollection *mongo.Collection = database.OpenCollection(database.Client, "menu")
 var validate = validator.New()
 
+const (
+	defaultPage     = 1
+	defaultPageSize = 20
+	maxPageSize     = 100
+)
+
+type FoodPaginationResult struct {
+	Foods []models.Food `bson:"foods" json:"foods"`
+	Total int64         `bson:"total" json:"total"`
+}
+
 func GetFoods() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 1. Parse and validate pagination parameters.
+		page, err := strconv.Atoi(c.DefaultQuery(
+			"page",
+			strconv.Itoa(defaultPage),
+		))
+		if err != nil || page < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "page must be a positive integer",
+			})
+			return
+		}
+
+		limit, err := strconv.Atoi(c.DefaultQuery(
+			"limit",
+			strconv.Itoa(defaultPageSize),
+		))
+		if err != nil || limit < 1 || limit > maxPageSize {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "limit must be between 1 and 100",
+			})
+			return
+		}
+
+		// 2. Calculate the offset safely.
+		skip := int64(page-1) * int64(limit)
+
+		// 3. Create a request-scoped timeout.
 		ctx, cancel := context.WithTimeout(
 			c.Request.Context(),
 			5*time.Second,
 		)
 		defer cancel()
 
-		var foods []models.Food
+		// 4. Define the aggregation pipeline.
+		pipeline := mongo.Pipeline{
+			// Stable ordering for pagination.
+			{{Key: "$sort", Value: bson.D{
+				{Key: "_id", Value: 1},
+			}}},
 
-		cursor, err := foodCollection.
-			Find(
-				ctx,
-				bson.M{},
-			)
+			// Get page data and total count together.
+			{{Key: "$facet", Value: bson.D{
+				{
+					Key: "foods",
+					Value: mongo.Pipeline{
+						{{Key: "$skip", Value: skip}},
+						{{Key: "$limit", Value: int64(limit)}},
+					},
+				},
+				{
+					Key: "metadata",
+					Value: mongo.Pipeline{
+						{{Key: "$count", Value: "total"}},
+					},
+				},
+			}}},
+
+			// Flatten metadata into a simple total field.
+			{{Key: "$project", Value: bson.D{
+				{
+					Key:   "foods",
+					Value: 1,
+				},
+				{
+					Key: "total",
+					Value: bson.D{
+						{
+							Key: "$ifNull",
+							Value: bson.A{
+								bson.D{
+									{
+										Key: "$arrayElemAt",
+										Value: bson.A{
+											"$metadata.total",
+											0,
+										},
+									},
+								},
+								int64(0),
+							},
+						},
+					},
+				},
+			}}},
+		}
+
+		// 5. Execute aggregation.
+		cursor, err := foodCollection.Aggregate(ctx, pipeline)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to fetch food items.",
@@ -45,18 +132,42 @@ func GetFoods() gin.HandlerFunc {
 		}
 		defer cursor.Close(ctx)
 
-		if err := cursor.All(ctx, &foods); err != nil {
+		// 6. Decode the single aggregation result.
+		result := FoodPaginationResult{
+			Foods: []models.Food{},
+			Total: 0,
+		}
+
+		if cursor.Next(ctx) {
+			if err := cursor.Decode(&result); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to decode food items.",
+				})
+				return
+			}
+		} else if err := cursor.Err(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to decode food items.",
+				"error": "Failed to read food items.",
 			})
 			return
 		}
 
-		if foods == nil {
-			foods = []models.Food{}
-		}
+		// 7. Calculate pagination metadata.
+		totalPages := (result.Total + int64(limit) - 1) /
+			int64(limit)
 
-		c.JSON(http.StatusOK, foods)
+		// 8. Return the paginated response.
+		c.JSON(http.StatusOK, gin.H{
+			"data": result.Foods,
+			"pagination": gin.H{
+				"page":        page,
+				"limit":       limit,
+				"totalItems":  result.Total,
+				"totalPages":  totalPages,
+				"hasNextPage": int64(page) < totalPages,
+				"hasPrevPage": page > 1,
+			},
+		})
 	}
 }
 
