@@ -45,7 +45,7 @@ func GetMenus() gin.HandlerFunc {
 			return
 		}
 
-		if menus != nil {
+		if menus == nil {
 			menus = []models.Menu{}
 		}
 

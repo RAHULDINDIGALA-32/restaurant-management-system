@@ -43,7 +43,7 @@ func GetOrders() gin.HandlerFunc {
 			return
 		}
 
-		if orders != nil {
+		if orders == nil {
 			orders = []models.Order{}
 		}
 
