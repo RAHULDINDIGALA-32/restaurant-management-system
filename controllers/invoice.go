@@ -100,7 +100,7 @@ func GetInvoice() gin.HandlerFunc {
 			return
 		}
 
-		allOrderItems, err := ItemsByOrder(invoice.Order_id)
+		allOrderItems, err := ItemsByOrder(invoice.Order_id, ctx)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to fetch order details",
@@ -202,8 +202,8 @@ func CreateInvoice() gin.HandlerFunc {
 			invoice.Payment_due_date = now
 		}
 
-		_, err := invoiceCollection.InsertOne(ctx, invoice)
-		if err != nil {
+		_, insertErr := invoiceCollection.InsertOne(ctx, invoice)
+		if insertErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to create invoice",
 			})
@@ -366,3 +366,53 @@ func DeleteInvoice() gin.HandlerFunc {
 		})
 	}
 }
+
+// Helpers
+
+// func ItemsByOrder(orderID string) ([]map[string]interface{}, error) {
+// 	ctx, cancel := context.WithTimeout(
+// 		context.Background(),
+// 		5*time.Second,
+// 	)
+// 	defer cancel()
+
+// 	// Fetch the order by order_id.
+// 	var order models.Order
+
+// 	err := orderCollection.FindOne(
+// 		ctx,
+// 		bson.M{"order_id": orderID},
+// 	).Decode(&order)
+
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	// Fetch all items associated with the order.
+// 	var orderItems []map[string]interface{}
+
+// 	cursor, err := orderItemCollection.Find(
+// 		ctx,
+// 		bson.M{"order_id": orderID},
+// 	)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer cursor.Close(ctx)
+
+// 	if err := cursor.All(ctx, &orderItems); err != nil {
+// 		return nil, err
+// 	}
+
+// 	// Return order information along with its items.
+// 	result := []map[string]interface{}{
+// 		{
+// 			"order_id":      order.Order_id,
+// 			"table_number":  order.Table_id,
+// 			"payment_due":   nil,
+// 			"order_details": orderItems,
+// 		},
+// 	}
+
+// 	return result, nil
+// }
